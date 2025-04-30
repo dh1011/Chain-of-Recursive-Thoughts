@@ -3,19 +3,21 @@ from typing import List, Dict, Optional, Union
 import openai
 from .llm_client_base import LLMClientBase
 
-class OpenAIClient(LLMClientBase):
-    """OpenAI implementation of the LLM client."""
+class OllamaClient(LLMClientBase):
+    """Ollama client implementation for LLM interactions using OpenAI API format."""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o"):
-        """Initialize the OpenAI client.
+    def __init__(self, api_key: Optional[str] = None, model: str = "dolphin3:latest"):
+        """Initialize the Ollama client.
         
         Args:
-            api_key: OpenAI API key
+            api_key: Not used for Ollama as it runs locally
             model: Model identifier to use
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model
-        self.client = openai.OpenAI(api_key=self.api_key)
+        self.client = openai.OpenAI(
+            api_key="#no-key",
+            base_url="http://localhost:11434/v1"
+        )
     
     def generate_completion(
         self,
@@ -24,7 +26,7 @@ class OpenAIClient(LLMClientBase):
         stream: bool = True,
         max_tokens: Optional[int] = None
     ) -> Union[str, None]:
-        """Generate a completion using OpenAI's API.
+        """Generate a completion from Ollama using OpenAI API format.
         
         Args:
             messages: List of message dictionaries with 'role' and 'content' keys
@@ -56,31 +58,57 @@ class OpenAIClient(LLMClientBase):
             else:
                 return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"OpenAI API Error: {e}")
+            print(f"Ollama API Error: {e}")
             return None
     
     def get_available_models(self) -> List[str]:
-        """Get list of available OpenAI models.
+        """Get list of available models from Ollama.
         
         Returns:
             List of model identifiers
         """
         try:
-            models = self.client.models.list()
-            return [model.id for model in models.data]
+            response = self.client.models.list()
+            return [model.id for model in response.data]
         except Exception as e:
             print(f"Error getting available models: {e}")
             return []
     
     def validate_api_key(self) -> bool:
-        """Validate the OpenAI API key.
+        """Validate the API key.
+        
+        Since Ollama runs locally, we'll just check if the server is running.
         
         Returns:
-            True if the API key is valid, False otherwise
+            True if the server is accessible, False otherwise
         """
         try:
-            # Try to list models as a simple validation
             self.client.models.list()
             return True
         except Exception:
-            return False 
+            return False
+
+def main():
+    # Initialize client with dolphin3 model
+    client = OllamaClient(model="dolphin3:latest")
+    
+    # Test if server is running
+    if not client.validate_api_key():
+        print("Error: Ollama server is not running")
+        return
+        
+    # Example messages
+    messages = [
+        {"role": "system", "content": "You are a helpful AI assistant."},
+        {"role": "user", "content": "What is the capital of France?"}
+    ]
+    
+    # Generate completion
+    response = client.generate_completion(
+        messages=messages,
+        temperature=0.7
+    )
+    print("Response:", response)
+
+if __name__ == "__main__":
+    main()

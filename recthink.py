@@ -1,46 +1,19 @@
-import openai
 import os
 from typing import List, Dict
-import json
-import requests
-from datetime import datetime
-import sys
-import time
+from llm_client.openai_client import OpenAIClient
+from llm_client.ollama_client import OllamaClient
+from memory import Memory
 
 class EnhancedRecursiveThinkingChat:
-    def __init__(self, api_key: str = None, model: str = "gpt-4o"):
-        """Initialize with OpenAI API."""
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.model = model
-        self.client = openai.OpenAI(api_key=self.api_key)
+    def __init__(self, client_type: str = "openai", model: str = "gpt-4o"):
+        """Initialize with either OpenAI or Ollama client."""
+        if client_type.lower() == "openai":
+            self.client = OpenAIClient(api_key=os.getenv("OPENAI_API_KEY"), model=model)
+        else:
+            self.client = OllamaClient(model='dolphin3:latest')
         self.conversation_history = []
         self.full_thinking_log = []
-    
-    def _call_api(self, messages: List[Dict], temperature: float = 0.7, stream: bool = True) -> str:
-        """Make an API call to OpenAI with streaming support."""
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                stream=stream,
-                max_tokens=4096
-            )
-            
-            if stream:
-                full_response = ""
-                for chunk in response:
-                    if chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        full_response += content
-                        print(content, end="", flush=True)
-                print()  # New line after streaming
-                return full_response
-            else:
-                return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"API Error: {e}")
-            return "Error: Could not get response from API"
+        self.memory = Memory()
     
     def _determine_thinking_rounds(self, prompt: str) -> int:
         """Let the model decide how many rounds of thinking are needed."""
@@ -53,14 +26,20 @@ Respond with just a number between 1 and 5."""
         messages = [{"role": "user", "content": meta_prompt}]
         
         print("\n=== DETERMINING THINKING ROUNDS ===")
-        response = self._call_api(messages, temperature=0.3, stream=True)
+        response = self.client.generate_completion(messages, temperature=0.3, stream=True)
         print("=" * 50 + "\n")
         
-        try:
-            rounds = int(''.join(filter(str.isdigit, response)))
-            return min(max(rounds, 1), 5)
-        except:
+        # Extract digits from response
+        digits = ''.join(filter(str.isdigit, response))
+        
+        # If no digits found, default to 3 rounds
+        if not digits:
+            print("Warning: No valid number found in response. Defaulting to 3 thinking rounds.")
             return 3
+            
+        rounds = int(digits)
+        # Ensure rounds is between 1 and 5
+        return min(max(rounds, 1), 5)
     
     def _generate_alternatives(self, base_response: str, prompt: str, num_alternatives: int = 3) -> List[str]:
         """Generate alternative responses."""
@@ -76,7 +55,7 @@ Generate an alternative response that might be better. Be creative and consider 
 Alternative response:"""
             
             messages = self.conversation_history + [{"role": "user", "content": alt_prompt}]
-            alternative = self._call_api(messages, temperature=0.7 + i * 0.1, stream=True)
+            alternative = self.client.generate_completion(messages, temperature=0.7 + i * 0.1, stream=True)
             alternatives.append(alternative)
             print("=" * 50)
         
@@ -99,7 +78,7 @@ First, respond with ONLY 'current' or a number (1-{len(alternatives)}).
 Then on a new line, explain your choice in one sentence."""
         
         messages = [{"role": "user", "content": eval_prompt}]
-        evaluation = self._call_api(messages, temperature=0.2, stream=True)
+        evaluation = self.client.generate_completion(messages, temperature=0.2, stream=True)
         print("=" * 50)
         
         # Better parsing
@@ -123,13 +102,10 @@ Then on a new line, explain your choice in one sentence."""
         
         if choice == 'current':
             return current_best, explanation
-        else:
-            try:
-                index = int(choice) - 1
-                if 0 <= index < len(alternatives):
-                    return alternatives[index], explanation
-            except:
-                pass
+        
+        index = int(choice) - 1
+        if 0 <= index < len(alternatives):
+            return alternatives[index], explanation
         
         return current_best, explanation
     
@@ -147,7 +123,7 @@ Then on a new line, explain your choice in one sentence."""
         # Initial response
         print("\n=== GENERATING INITIAL RESPONSE ===")
         messages = self.conversation_history + [{"role": "user", "content": user_input}]
-        current_best = self._call_api(messages, stream=True)
+        current_best = self.client.generate_completion(messages, stream=True)
         print("=" * 50)
         
         thinking_history = [{"round": 0, "response": current_best, "selected": True}]
@@ -193,11 +169,25 @@ Then on a new line, explain your choice in one sentence."""
         
         # Add to conversation history
         self.conversation_history.append({"role": "user", "content": user_input})
+        
+        # Add the final selected response to conversation history
         self.conversation_history.append({"role": "assistant", "content": current_best})
         
         # Keep conversation history manageable
         if len(self.conversation_history) > 10:
             self.conversation_history = self.conversation_history[-10:]
+        
+        # Save the full thinking process including all rounds and alternatives
+        self.full_thinking_log.append({
+            "user_input": user_input,
+            "thinking_rounds": thinking_rounds,
+            "thinking_history": thinking_history,
+            "final_response": current_best
+        })
+        
+        # Automatically save both conversation and full thinking log
+        self.save_conversation()
+        self.save_full_log()
         
         print("\n" + "=" * 50)
         print("🎯 FINAL RESPONSE SELECTED")
@@ -210,48 +200,30 @@ Then on a new line, explain your choice in one sentence."""
         }
     
     def save_full_log(self, filename: str = None):
-        """Save the full thinking process log."""
-        if filename is None:
-            filename = f"full_thinking_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump({
-                "conversation": self.conversation_history,
-                "full_thinking_log": self.full_thinking_log,
-                "timestamp": datetime.now().isoformat()
-            }, f, indent=2, ensure_ascii=False)
-        
-        print(f"Full thinking log saved to {filename}")
+        """Save the full thinking process log using the memory module."""
+        self.memory.remember(self.conversation_history, self.full_thinking_log)
+        print("Full thinking log saved to history directory")
     
     def save_conversation(self, filename: str = None):
-        """Save the conversation and thinking history."""
-        if filename is None:
-            filename = f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump({
-                "conversation": self.conversation_history,
-                "timestamp": datetime.now().isoformat()
-            }, f, indent=2, ensure_ascii=False)
-        
-        print(f"Conversation saved to {filename}")
+        """Save the conversation using the memory module."""
+        self.memory.remember(self.conversation_history)
+        print("Conversation saved to history directory")
 
 def main():
     print("🤖 Enhanced Recursive Thinking Chat")
     print("=" * 50)
     
-    # Get API key
-    api_key = input("Enter your OpenAI API key (or press Enter to use env variable): ").strip()
-    if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            print("Error: No API key provided and OPENAI_API_KEY not found in environment")
-            return
+    # Choose client type
+    while True:
+        client_type = input("Choose LLM client (openai/ollama): ").strip().lower()
+        if client_type in ["openai", "ollama"]:
+            break
+        print("Please enter either 'openai' or 'ollama'")
     
     # Initialize chat
-    chat = EnhancedRecursiveThinkingChat(api_key=api_key)
+    chat = EnhancedRecursiveThinkingChat(client_type=client_type)
     
-    print("\nChat initialized! Type 'exit' to quit, 'save' to save conversation.")
+    print("\nChat initialized! Type 'exit' to quit.")
     print("The AI will think recursively before each response.\n")
     
     while True:
@@ -259,38 +231,14 @@ def main():
         
         if user_input.lower() == 'exit':
             break
-        elif user_input.lower() == 'save':
-            chat.save_conversation()
-            continue
-        elif user_input.lower() == 'save full':
-            chat.save_full_log()
-            continue
         elif not user_input:
             continue
         
         # Get response with thinking process
         result = chat.think_and_respond(user_input)
         
-        print(f"\n🤖 AI FINAL RESPONSE: {result['response']}\n")
-        
-        # Always show complete thinking process
-        print("\n--- COMPLETE THINKING PROCESS ---")
-        for item in result['thinking_history']:
-            print(f"\nRound {item['round']} {'[SELECTED]' if item['selected'] else '[ALTERNATIVE]'}:")
-            print(f"  Response: {item['response']}")
-            if 'explanation' in item and item['selected']:
-                print(f"  Reason for selection: {item['explanation']}")
-            print("-" * 50)
-        print("--------------------------------\n")
-    
-    # Save on exit
-    save_on_exit = input("Save conversation before exiting? (y/n): ").strip().lower()
-    if save_on_exit == 'y':
-        chat.save_conversation()
-        save_full = input("Save full thinking log? (y/n): ").strip().lower()
-        if save_full == 'y':
-            chat.save_full_log()
-    
+        print(f"\n🤖 AI FINAL RESPONSE: \n{result['response']}\n")
+
     print("Goodbye! 👋")
 
 if __name__ == "__main__":
