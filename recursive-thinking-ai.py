@@ -8,59 +8,36 @@ import sys
 import time
 
 class EnhancedRecursiveThinkingChat:
-    def __init__(self, api_key: str = None, model: str = "mistralai/mistral-small-3.1-24b-instruct:free"):
-        """Initialize with OpenRouter API."""
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    def __init__(self, api_key: str = None, model: str = "gpt-4o"):
+        """Initialize with OpenAI API."""
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.model = model
-        self.base_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "HTTP-Referer": "http://localhost:3000",
-            "X-Title": "Recursive Thinking Chat",
-            "Content-Type": "application/json"
-        }
+        self.client = openai.OpenAI(api_key=self.api_key)
         self.conversation_history = []
         self.full_thinking_log = []
     
     def _call_api(self, messages: List[Dict], temperature: float = 0.7, stream: bool = True) -> str:
-        """Make an API call to OpenRouter with streaming support."""
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": stream,
-            "reasoning": {
-                "max_tokens": 10386,
-            }
-        }
-        
+        """Make an API call to OpenAI with streaming support."""
         try:
-            response = requests.post(self.base_url, headers=self.headers, json=payload, stream=stream)
-            response.raise_for_status()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                stream=stream,
+                max_tokens=4096
+            )
             
             if stream:
                 full_response = ""
-                for line in response.iter_lines():
-                    if line:
-                        line = line.decode('utf-8')
-                        if line.startswith("data: "):
-                            line = line[6:]
-                            if line.strip() == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(line)
-                                if "choices" in chunk and len(chunk["choices"]) > 0:
-                                    delta = chunk["choices"][0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    if content:
-                                        full_response += content
-                                        print(content, end="", flush=True)
-                            except json.JSONDecodeError:
-                                continue
+                for chunk in response:
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        full_response += content
+                        print(content, end="", flush=True)
                 print()  # New line after streaming
                 return full_response
             else:
-                return response.json()['choices'][0]['message']['content'].strip()
+                return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"API Error: {e}")
             return "Error: Could not get response from API"
@@ -264,11 +241,11 @@ def main():
     print("=" * 50)
     
     # Get API key
-    api_key = input("Enter your OpenRouter API key (or press Enter to use env variable): ").strip()
+    api_key = input("Enter your OpenAI API key (or press Enter to use env variable): ").strip()
     if not api_key:
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print("Error: No API key provided and OPENROUTER_API_KEY not found in environment")
+            print("Error: No API key provided and OPENAI_API_KEY not found in environment")
             return
     
     # Initialize chat
